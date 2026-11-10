@@ -1,0 +1,20 @@
+@startuml
+skinparam shadowing false
+state "草稿" as Draft
+state "待审核" as Pending
+state "已发布" as Published
+state "已下架" as TakenDown
+state "已停用" as Disabled
+state "已取消" as Cancelled
+
+[*] --> Draft : 创建活动
+Draft --> Pending : 提交审核
+Pending --> Published : 审核通过
+Pending --> Draft : 驳回并填写原因
+Published --> Pending : 提交变更审核
+Published --> TakenDown : 组织者下架
+Published --> Disabled : 管理员停用
+Published --> Cancelled : 活动不再举办
+TakenDown --> Pending : 重新提交审核
+
+@enduml

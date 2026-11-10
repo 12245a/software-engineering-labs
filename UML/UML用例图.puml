@@ -1,0 +1,41 @@
+@startuml
+left to right direction
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam linetype ortho
+
+actor "参与者" as Visitor
+actor "组织者" as Organizer
+actor "检票人员" as Checker
+actor "平台管理员" as Admin
+
+rectangle "活动票务与报名系统" {
+  (查询活动与可购票种) as Search
+  (提交报名/加入候补) as Register
+  (确认候补递补) as Confirm
+  (查看电子票/报名记录) as MyTickets
+  (整单自助取消) as CancelSelf
+  (申请组织者资质) as Qualification
+  (创建活动/配置场次票种) as Manage
+  (提交审核申请) as Submit
+  (查看统计与导出名单) as Statistics
+  (指定检票人员) as Assign
+  (验票与签到) as Checkin
+  (审核资质/活动变更) as Review
+  (管理用户与操作日志) as SystemAdmin
+}
+Visitor --> Search
+Visitor --> Register
+Visitor --> Confirm
+Visitor --> MyTickets
+Visitor --> CancelSelf
+Visitor --> Qualification
+Organizer --> Manage
+Organizer --> Submit
+Organizer --> Statistics
+Organizer --> Assign
+Checker --> Checkin
+Admin --> Review
+Admin --> SystemAdmin
+
+@enduml

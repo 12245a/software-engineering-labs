@@ -1,0 +1,47 @@
+@startuml
+autonumber
+skinparam shadowing false
+
+actor "参与者" as User
+boundary "报名界面" as UI
+control "报名与候补服务" as Reg
+control "名额事务服务" as Quota
+database "数据库" as DB
+control "定时/递补任务" as Task
+control "通知服务" as Notify
+
+User -> UI : 提交报名（场次及各票种数量）
+UI -> Reg : submit(request)
+Reg -> Reg : 校验状态、限购、截止、幂等
+Reg -> Quota : 按 ticketTypeId 升序锁定、校验整单
+Quota -> DB : 原子检查名额与预留
+DB --> Quota : 返回可用量
+
+alt 全部票种有余量
+  Reg -> DB : 事务创建已报名记录及已出票 ETicket
+  Reg --> UI : 报名成功，返回电子票
+else 余量不足且候补开放
+  Reg -> DB : 保存候补中记录及待出票 ETicket
+  Reg --> UI : 返回候补位置
+else 校验失败或已截止
+  Reg --> UI : 返回拒绝原因
+end
+
+== 名额释放后的队首递补 ==
+Task -> Reg : 触发队首重检
+Reg -> Quota : 检查已有预留+各票种当前余量
+Quota -> DB : 统一顺序加锁，原子预留整单所需名额
+alt 整单满足且尚可发送通知
+  Reg -> DB : 保存待发送通知任务
+  Reg -> Notify : 投递递补通知
+  Notify --> Reg : 实际发送成功
+  Reg -> DB : 记录 sentAt、30分钟期限，转待确认
+  Notify --> User : 通知确认递补
+  User -> UI : 期限内确认
+  UI -> Reg : confirm()
+  Reg -> DB : 原子消费预留并出票，转已报名
+  Reg --> UI : 返回电子票
+else 不满足或已经过新通知截止点
+  Reg -> DB : 保留候补状态，等待或关闭清理
+end
+@enduml

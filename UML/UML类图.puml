@@ -1,0 +1,68 @@
+@startuml
+left to right direction
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+hide empty methods
+
+class User {
+  +userId: Long
+  +phone: String
+}
+class Event {
+  +eventId: Long
+  +title: String
+  +status: EventStatus
+}
+class EventReviewRequest {
+  +reviewRequestId: Long
+  +requestType: String
+  +reviewStatus: String
+}
+class Session {
+  +sessionId: Long
+  +startAt: DateTime
+  +status: SessionStatus
+}
+class TicketType {
+  +ticketTypeId: Long
+  +capacity: Int
+  +saleDeadlineAt: DateTime
+}
+class Registration {
+  +registrationId: Long
+  +status: RegistrationStatus
+  +waitlistOrderNo: Long
+}
+class ETicket {
+  +ticketId: Long
+  +issueStatus: String
+  +attendanceStatus: String
+}
+class WaitlistReservation {
+  +reservedQuantity: Int
+  +status: String
+}
+class WaitlistNotification {
+  +sentAt: DateTime
+  +confirmDeadlineAt: DateTime
+}
+class SessionCheckerAssignment {
+  +assignmentId: Long
+  +checkerUserId: Long
+}
+
+User "1" -- "0..*" Event : 组织
+User "1" -- "0..*" Registration : 提交
+Event "1" *-- "0..*" Session
+Event "1" -- "0..*" EventReviewRequest : 审核申请
+Session "1" *-- "0..*" TicketType
+Session "1" -- "0..*" Registration
+Registration "1" *-- "1..2" ETicket
+TicketType "1" -- "0..*" ETicket : 票种
+Registration "1" -- "0..*" WaitlistReservation
+TicketType "1" -- "0..*" WaitlistReservation : 被预留
+Registration "1" -- "0..*" WaitlistNotification
+Session "1" -- "0..*" SessionCheckerAssignment : 检票绑定
+
+@enduml

@@ -1,0 +1,28 @@
+@startuml
+autonumber
+skinparam shadowing false
+actor "检票人员" as Checker
+boundary "检票界面" as UI
+control "电子票检票服务" as Ticket
+database "数据库" as DB
+control "报名服务" as Reg
+
+Checker -> UI : 扫码（或姓名+手机号后四位检索）
+UI -> Ticket : 校验电子票及场次授权
+Ticket -> DB : 查询有效性、首次签到状态
+DB --> Ticket : 返回核验结果
+
+alt 票有效且尚未签到
+  Ticket --> UI : 展示统一确认界面（姓名/票种）
+  Checker -> UI : 确认签到
+  UI -> Ticket : checkIn(ticketId)
+  Ticket -> DB : 原子更新票级状态及首次签到时间
+  Ticket -> Reg : 至少一张签到时，更新报名为已签到
+  Ticket --> UI : 签到成功
+else 已签到
+  Ticket --> UI : 提示重复签到及首次签到时间
+else 无效、场次错误或未匹配
+  Ticket --> UI : 拒绝签到并显示原因
+end
+
+@enduml
