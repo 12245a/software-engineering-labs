@@ -1,68 +1,121 @@
 @startuml
+skinparam dpi 300
 left to right direction
-skinparam shadowing false
-skinparam classAttributeIconSize 0
 skinparam linetype ortho
 hide empty methods
 
 class User {
-  +userId: Long
-  +phone: String
+  - userId: Long
+  - phone: String
 }
+
 class Event {
-  +eventId: Long
-  +title: String
-  +status: EventStatus
+  - eventId: Long
+  - title: String
+  - status: EventStatus
+  - coverImageUrl: String
 }
+
 class EventReviewRequest {
-  +reviewRequestId: Long
-  +requestType: String
-  +reviewStatus: String
+  - reviewRequestId: Long
+  - requestType: ReviewRequestType
+  - reviewStatus: ReviewStatus
+  - proposalSnapshot: JSON
+  - versionNo: Int
+  --
+  + recordDecision(): void
 }
+
 class Session {
-  +sessionId: Long
-  +startAt: DateTime
-  +status: SessionStatus
+  - sessionId: Long
+  - startAt: DateTime
+  - endAt: DateTime
+  - totalCapacity: Int
+  - status: SessionStatus
+  - absenceProcessedAt: DateTime
+  - waitlistClosedAt: DateTime
 }
+
 class TicketType {
-  +ticketTypeId: Long
-  +capacity: Int
-  +saleDeadlineAt: DateTime
+  - ticketTypeId: Long
+  - typeName: String
+  - unitPrice: Decimal
+  - capacity: Int
+  - saleDeadlineAt: DateTime
+  - status: String
 }
+
 class Registration {
-  +registrationId: Long
-  +status: RegistrationStatus
-  +waitlistOrderNo: Long
+  - registrationId: Long
+  - status: RegistrationStatus
+  - paymentStatus: PaymentStatus
+  - createdAt: DateTime
+  - waitlistJoinedAt: DateTime
+  - waitlistOrderNo: Long
+  --
+  + enterWaitlist(): void
+  + confirmWaitlist(): void
+  + cancel(): void
 }
+
 class ETicket {
-  +ticketId: Long
-  +issueStatus: String
-  +attendanceStatus: String
+  - ticketId: Long
+  - holderName: String
+  - holderPhoneEncrypted: String
+  - holderPhoneLast4: String
+  - holderIdentityNoEncrypted: String
+  - unitPriceSnapshot: Decimal
+  - qrTokenHash: String
+  - issueStatus: IssueStatus
+  - validityStatus: ValidityStatus
+  - attendanceStatus: AttendanceStatus
+  - checkedInAt: DateTime
+  --
+  + issue(): void
+  + checkIn(): void
+  + markAbsent(): void
 }
+
 class WaitlistReservation {
-  +reservedQuantity: Int
-  +status: String
+  - reservationId: Long
+  - reservedQuantity: Int
+  - status: ReservationStatus
+  --
+  + consume(): void
+  + release(): void
 }
+
 class WaitlistNotification {
-  +sentAt: DateTime
-  +confirmDeadlineAt: DateTime
+  - notificationId: Long
+  - sentAt: DateTime
+  - confirmDeadlineAt: DateTime
+  - deliveryStatus: String
+  - outcome: NotificationOutcome
 }
+
 class SessionCheckerAssignment {
-  +assignmentId: Long
-  +checkerUserId: Long
+  - assignmentId: Long
+  - assignedAt: DateTime
+  - status: String
 }
 
 User "1" -- "0..*" Event : 组织
 User "1" -- "0..*" Registration : 提交
-Event "1" *-- "0..*" Session
+User "1" -- "0..*" SessionCheckerAssignment : 被指定为检票员
+
+Event "1" *-- "0..*" Session : 包含
 Event "1" -- "0..*" EventReviewRequest : 审核申请
-Session "1" *-- "0..*" TicketType
-Session "1" -- "0..*" Registration
-Registration "1" *-- "1..2" ETicket
-TicketType "1" -- "0..*" ETicket : 票种
-Registration "1" -- "0..*" WaitlistReservation
-TicketType "1" -- "0..*" WaitlistReservation : 被预留
-Registration "1" -- "0..*" WaitlistNotification
+Session "0..1" -- "0..*" EventReviewRequest : 场次取消目标
+TicketType "0..1" -- "0..*" EventReviewRequest : 票种关闭目标
+
+Session "1" *-- "0..*" TicketType : 配置
+Session "1" -- "0..*" Registration : 报名场次
 Session "1" -- "0..*" SessionCheckerAssignment : 检票绑定
+
+Registration "1" *-- "1..2" ETicket : 票级记录
+TicketType "1" -- "0..*" ETicket : 对应票种
+Registration "1" -- "0..*" WaitlistReservation : 持有预留
+TicketType "1" -- "0..*" WaitlistReservation : 预留票种
+Registration "1" -- "0..*" WaitlistNotification : 递补通知
 
 @enduml

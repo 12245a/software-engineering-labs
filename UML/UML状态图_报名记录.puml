@@ -1,5 +1,7 @@
 @startuml
-skinparam shadowing false
+skinparam dpi 300
+left to right direction
+
 state "候补中" as Wait
 state "待确认" as Pending
 state "已报名" as Registered
@@ -7,15 +9,18 @@ state "已签到" as Checked
 state "缺席" as Absent
 state "已取消" as Cancelled
 
+[*] --> Wait : 名额不足且候补开放
 [*] --> Registered : 整单报名成功
-[*] --> Wait : 余量不足且候补开放
-Wait --> Pending : 队首整单可满足、通知发送成功
-Pending --> Registered : 30分钟内确认
-Pending --> Wait : 超时/释放预留并退队尾
-Pending --> Cancelled : 主动放弃
-Wait --> Cancelled : 主动取消/候补关闭/活动取消
-Registered --> Cancelled : 整单取消/活动取消
-Registered --> Checked : 至少一张票签到
-Registered --> Absent : 场次结束且全未签到
+
+Wait -down-> Pending : 队首满足且通知成功
+Pending -up-> Wait : 超时且未截止/释放预留并退队尾
+Pending -right-> Registered : 期限内确认且未截止
+
+Registered -down-> Checked : 至少一张票签到
+Registered -right-> Absent : 场次结束且全未签到
+
+Wait --> Cancelled : 取消或候补截止
+Pending --> Cancelled : 放弃或候补截止
+Registered --> Cancelled : 整单取消或活动取消
 
 @enduml

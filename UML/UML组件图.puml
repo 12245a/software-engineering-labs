@@ -1,13 +1,13 @@
 @startuml
-left to right direction
-skinparam shadowing false
-skinparam componentStyle rectangle
+skinparam dpi 300
+top to bottom direction
 skinparam packageStyle rectangle
 skinparam linetype ortho
 
 package "表现层" {
   component "Web / 检票界面" as UI
 }
+
 package "应用层：七个业务模块" {
   component "用户与权限管理" as Access
   component "活动管理" as EventApp
@@ -17,30 +17,30 @@ package "应用层：七个业务模块" {
   component "数据统计与导出" as StatsApp
   component "系统管理与操作日志" as LogApp
 }
+
 package "领域层" {
   component "核心业务规则\n状态 / FIFO / 容量" as Domain
 }
+
 package "基础设施层" {
-  component "公共支撑服务（6项）\n认证、数据访问、名额事务\n通知、日志、数据安全" as Shared
+  component "公共支撑服务\n认证 / 数据访问 / 名额事务\n通知 / 日志 / 数据安全" as Shared
   component "定时任务调度" as Scheduler
   database "关系型数据库" as DB
 }
 
-UI --> Access
-UI --> SearchApp
-UI --> RegisterApp
-UI --> TicketApp
-SearchApp ..> EventApp : 读取活动与票种
-RegisterApp ..> TicketApp : 出票/失效
-RegisterApp ..> Domain : FIFO与整单递补
-TicketApp ..> Domain : 票级签到
-EventApp ..> Domain : 状态与审核
-StatsApp ..> Domain : 统计口径
-RegisterApp ..> Shared : 名额事务/通知
-TicketApp ..> Shared : 授权/持久化
-Scheduler ..> RegisterApp : 截止/候补关闭
+UI --> RegisterApp : 业务请求
+
+SearchApp ..> EventApp : 查询活动数据
+RegisterApp ..> TicketApp : 出票与失效
+
+RegisterApp ..> Domain : 报名与候补规则
+EventApp ..> Domain : 活动状态与审核
+TicketApp ..> Domain : 电子票状态
+
+RegisterApp ..> Shared : 事务与通知
+Shared --> DB : 数据持久化
+
+Scheduler ..> RegisterApp : 候补截止处理
 Scheduler ..> TicketApp : 缺席处理
-Shared --> DB
-LogApp ..> Shared : 日志持久化
 
 @enduml
