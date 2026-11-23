@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     venue TEXT NOT NULL,
     starts_at TEXT NOT NULL,
     ends_at TEXT,
+    cancelled_at TEXT,
     capacity INTEGER NOT NULL CHECK (capacity > 0)
 );
 
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS ticket_types (
     name TEXT NOT NULL,
     price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
     capacity INTEGER NOT NULL CHECK (capacity > 0),
+    closed_at TEXT,
     UNIQUE (session_id, name),
     UNIQUE (id, session_id)
 );
@@ -55,11 +57,18 @@ CREATE TABLE IF NOT EXISTS change_proposals (
     FOREIGN KEY (ticket_type_id, session_id) REFERENCES ticket_types(id, session_id)
 );
 
+CREATE TABLE IF NOT EXISTS closure_proposals (
+    review_id INTEGER PRIMARY KEY REFERENCES reviews(id),
+    session_id INTEGER NOT NULL REFERENCES sessions(id),
+    ticket_type_id INTEGER,
+    FOREIGN KEY (ticket_type_id, session_id) REFERENCES ticket_types(id, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS registrations (
     id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
     session_id INTEGER NOT NULL REFERENCES sessions(id),
-    status TEXT NOT NULL CHECK (status IN ('registered', 'checked_in', 'cancelled')),
+    status TEXT NOT NULL CHECK (status IN ('registered', 'checked_in', 'absent', 'cancelled')),
     UNIQUE (id, session_id)
 );
 
@@ -90,6 +99,7 @@ CREATE TABLE IF NOT EXISTS operation_logs (
     actor_id INTEGER NOT NULL REFERENCES users(id),
     action TEXT NOT NULL,
     target_id INTEGER NOT NULL,
+    target_type TEXT NOT NULL DEFAULT '',
     reason TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
