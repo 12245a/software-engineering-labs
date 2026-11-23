@@ -11,6 +11,10 @@ from pathlib import Path
 from threading import Lock
 
 
+BOOKING_CUTOFF = timedelta(hours=2)
+OFFER_WINDOW = timedelta(minutes=30)
+SELF_CANCELLATION_CUTOFF = timedelta(hours=24)
+
 PUBLIC_EVENT = (
     "(e.status = 'published' OR (e.status = 'pending' AND EXISTS ("
     "SELECT 1 FROM reviews r LEFT JOIN change_proposals p ON p.review_id = "
@@ -20,6 +24,7 @@ PUBLIC_EVENT = (
     "NULL OR c.review_id IS NOT NULL))))"
 )
 
+
 LEGACY_LOG_TARGETS = {
     "event": ("创建活动草稿", "提交发布审核", "提交变更审核", "审核通过", "审核驳回", "发布审核通过", "发布审核驳回",
               "变更审核通过", "变更审核驳回", "下架活动", "停用活动", "取消活动"),
@@ -28,6 +33,11 @@ LEGACY_LOG_TARGETS = {
     "waitlist": ("加入候补", "递补超时释放", "关闭无法满足的候补", "生成站内递补通知", "放弃候补", "确认递补"),
     "ticket": ("检票签到",),
 }
+
+
+def _booking_deadline_for(starts_at):
+    """Return the booking deadline for a stored session time."""
+    return datetime.fromisoformat(starts_at) - BOOKING_CUTOFF
 
 
 class RuleError(ValueError):
@@ -43,6 +53,8 @@ class InvalidTicketQuantity(RuleError):
 
 
 class AlreadyCheckedIn(RuleError):
+    """Report when a ticket already has a recorded check-in."""
+
     def __init__(self, checked_at):
         self.first_checked_at = checked_at.replace("T", " ")
         super().__init__(f"该票已签到，首次签到时间为 {self.first_checked_at}。")
@@ -50,12 +62,16 @@ class AlreadyCheckedIn(RuleError):
 
 @dataclass(frozen=True)
 class TicketRequest:
+    """Identify the requested ticket type and its holder."""
+
     ticket_type_id: int
     holder_name: str
 
 
 @dataclass(frozen=True)
 class SessionDraft:
+    """Carry one session's schedule, capacity, and ticket quotas."""
+
     venue: str
     starts_at: datetime
     capacity: int
@@ -64,22 +80,29 @@ class SessionDraft:
 
 
 class Ticketing:
+    """Enforce ticketing rules and store workflow changes in SQLite."""
+
     def __init__(self, path, clock=datetime.now):
         self.path = path
         self.clock = clock
         self._write_lock = Lock()
-        schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
+        schema = Path(__file__).with_name("schema.sql").read_text(
+            encoding="utf-8",
+        )
         with self.connection() as db:
             self.migrate_schema(db)
             db.executescript(schema)
             db.execute("BEGIN IMMEDIATE")
-            if "ends_at" not in {row["name"] for row in db.execute("PRAGMA table_info(sessions)")}:
+            if "ends_at" not in {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(sessions)")
+            }:
                 db.execute("ALTER TABLE sessions ADD COLUMN ends_at TEXT")
             db.commit()
 
     @staticmethod
     def migrate_schema(db):
-        """Upgrade the first prototype's database while keeping ticket references."""
+        """Upgrade an older database while preserving ticket references."""
         db.execute("PRAGMA foreign_keys = OFF")
         try:
             db.execute("BEGIN IMMEDIATE")
@@ -91,10 +114,12 @@ class Ticketing:
             if version < 3 and existing:
                 db.execute(
                     "CREATE TABLE registrations_v3 ("
-                    "id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), "
+                    "id INTEGER PRIMARY KEY, "
+                    "user_id INTEGER NOT NULL REFERENCES users(id), "
                     "session_id INTEGER NOT NULL REFERENCES sessions(id), "
                     "status TEXT NOT NULL "
-                    "CHECK (status IN ('registered', 'checked_in', 'absent', 'cancelled')), "
+                    "CHECK (status IN "
+                    "('registered', 'checked_in', 'absent', 'cancelled')), "
                     "UNIQUE (id, session_id))"
                 )
                 db.execute(
@@ -103,7 +128,9 @@ class Ticketing:
                     "SELECT id, user_id, session_id, status FROM registrations"
                 )
                 db.execute("DROP TABLE registrations")
-                db.execute("ALTER TABLE registrations_v3 RENAME TO registrations")
+                db.execute(
+                    "ALTER TABLE registrations_v3 RENAME TO registrations",
+                )
                 db.execute(
                     "CREATE UNIQUE INDEX one_active_registration "
                     "ON registrations(user_id, session_id) WHERE status <> "
@@ -112,11 +139,16 @@ class Ticketing:
                 if db.execute("PRAGMA foreign_key_check").fetchone():
                     raise sqlite3.IntegrityError("数据库升级未通过外键检查。")
             if version == 0 and existing:
-                db.execute("ALTER TABLE operation_logs ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+                db.execute(
+                    "ALTER TABLE operation_logs ADD COLUMN reason "
+                    "TEXT NOT NULL DEFAULT ''",
+                )
             if version < 2 and existing:
                 db.execute(
-                    "CREATE TABLE events_v2 (id INTEGER PRIMARY KEY, organizer_id INTEGER "
-                    "NOT NULL REFERENCES users(id), title TEXT NOT NULL, status TEXT NOT NULL "
+                    "CREATE TABLE events_v2 (id INTEGER PRIMARY KEY, "
+                    "organizer_id INTEGER "
+                    "NOT NULL REFERENCES users(id), "
+                    "title TEXT NOT NULL, status TEXT NOT NULL "
                     "CHECK (status IN ('draft', 'pending', 'published', "
                     "'unlisted', 'disabled', 'cancelled')))"
                 )
@@ -127,7 +159,8 @@ class Ticketing:
                 db.execute("DROP TABLE events")
                 db.execute("ALTER TABLE events_v2 RENAME TO events")
                 db.execute(
-                    "ALTER TABLE reviews ADD COLUMN previous_status TEXT NOT NULL DEFAULT 'draft'"
+                    "ALTER TABLE reviews ADD COLUMN previous_status "
+                    "TEXT NOT NULL DEFAULT 'draft'"
                 )
                 if db.execute("PRAGMA foreign_key_check").fetchone():
                     raise sqlite3.IntegrityError("活动数据库升级未通过外键检查。")
@@ -145,7 +178,9 @@ class Ticketing:
                     )
             if version < 5 and existing:
                 db.execute("ALTER TABLE sessions ADD COLUMN cancelled_at TEXT")
-                db.execute("ALTER TABLE ticket_types ADD COLUMN closed_at TEXT")
+                db.execute(
+                    "ALTER TABLE ticket_types ADD COLUMN closed_at TEXT",
+                )
             if version < 5:
                 db.execute("PRAGMA user_version = 5")
             db.commit()
@@ -157,7 +192,9 @@ class Ticketing:
 
     @contextmanager
     def connection(self, *, write=False):
-        # SQLite permits one writer at a time. Queue local writers before they open connections.
+        # SQLite permits one writer at a time, so queue local writers before
+        # they open connections.
+        """Open a SQLite connection and serialize writes by this service."""
         with self._write_lock if write else nullcontext():
             db = sqlite3.connect(self.path, timeout=5, isolation_level=None)
             db.row_factory = sqlite3.Row
@@ -176,6 +213,7 @@ class Ticketing:
 
     @staticmethod
     def require_role(db, user_id, role):
+        """Reject actions by users outside the required role."""
         user = db.execute(
             "SELECT role FROM users WHERE id = ?", (user_id,),
         ).fetchone()
@@ -183,14 +221,19 @@ class Ticketing:
             raise RuleError("当前账号无权执行此操作。")
 
     def log(self, db, actor, action, target, reason="", *, target_type):
+        """Store the action, actor, target, and optional reason."""
         db.execute(
             "INSERT INTO operation_logs(actor_id, action, target_id, "
             "target_type, created_at, reason) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (actor, action, target, target_type, self.clock().isoformat(timespec="seconds"), reason),
+            (
+                actor, action, target, target_type,
+                self.clock().isoformat(timespec="seconds"), reason,
+            ),
         )
 
     def seed_demo_users(self):
+        """Create demo identities while preserving existing records."""
         users = [
             (1, "演示组织者", "organizer"),
             (2, "演示管理员", "admin"),
@@ -205,8 +248,11 @@ class Ticketing:
             )
 
     def users(self):
+        """List users in ID order for the identity selector."""
         with self.connection() as db:
-            return db.execute("SELECT id, name, role FROM users ORDER BY id").fetchall()
+            return db.execute(
+                "SELECT id, name, role FROM users ORDER BY id",
+            ).fetchall()
 
     def create_event(
         self, actor, title, venue, starts_at, capacity, ticket_types, *,
@@ -216,12 +262,15 @@ class Ticketing:
         draft = SessionDraft(
             venue, starts_at, capacity, tuple(ticket_types), ends_at,
         )
-        event, (session,) = self.create_event_with_sessions(actor, title, (draft,))
+        event, (session,) = self.create_event_with_sessions(
+            actor, title, (draft,),
+        )
         return event, session
 
     def create_event_with_sessions(
         self, actor, title, sessions, *, submit=False,
     ):
+        """Save an activity and all of its sessions in one transaction."""
         title = title.strip()
         if not title:
             raise RuleError("请填写活动名称。")
@@ -247,6 +296,7 @@ class Ticketing:
         self, actor, event, venue, starts_at, capacity, ticket_types, *,
         ends_at=None,
     ):
+        """Append a session to an activity draft owned by the organizer."""
         with self.connection(write=True) as db:
             self.require_role(db, actor, "organizer")
             draft = db.execute(
@@ -275,27 +325,39 @@ class Ticketing:
         return row
 
     def draft_session(self, actor, session):
+        """Return a draft session and its currently configured ticket types."""
         with self.connection() as db:
             row = self._owned_draft_session(db, actor, session)
             types = tuple(tuple(ticket) for ticket in db.execute(
                 "SELECT name, price_cents, capacity FROM ticket_types WHERE "
                 "session_id = ? ORDER BY id", (session,),
             ))
-            ends_at = datetime.fromisoformat(row["ends_at"]) if row["ends_at"] else None
+            ends_at = (
+                datetime.fromisoformat(row["ends_at"])
+                if row["ends_at"] else None
+            )
             return SessionDraft(
                 row["venue"], datetime.fromisoformat(row["starts_at"]),
                 row["capacity"], types, ends_at,
             )
 
     def edit_draft_session(self, actor, session, draft):
+        """Replace the selected draft session's schedule and quotas."""
         with self.connection(write=True) as db:
             self._owned_draft_session(db, actor, session)
             types = self.validate_session(draft)
-            ends_at = draft.ends_at.isoformat(timespec="seconds") if draft.ends_at else None
+            ends_at = (
+                draft.ends_at.isoformat(timespec="seconds")
+                if draft.ends_at else None
+            )
             db.execute(
                 "UPDATE sessions SET venue = ?, starts_at = ?, ends_at = ?, "
                 "capacity = ? WHERE id = ?",
-                (draft.venue.strip(), draft.starts_at.isoformat(timespec="seconds"), ends_at, draft.capacity, session),
+                (
+                    draft.venue.strip(),
+                    draft.starts_at.isoformat(timespec="seconds"),
+                    ends_at, draft.capacity, session,
+                ),
             )
             db.execute(
                 "DELETE FROM ticket_types WHERE session_id = ?", (session,),
@@ -304,13 +366,17 @@ class Ticketing:
             self.log(db, actor, "编辑草稿场次", session, target_type="session")
 
     def validate_session(self, draft):
+        """Validate a schedule and return normalized ticket quotas."""
         if not draft.venue.strip():
             raise RuleError("请填写场次地点。")
         if draft.starts_at <= self.clock():
             raise RuleError("场次开始时间必须晚于当前时间。")
         if draft.ends_at is not None and draft.ends_at <= draft.starts_at:
             raise RuleError("场次结束时间必须晚于开始时间。")
-        types = [(name.strip(), price, quota) for name, price, quota in draft.ticket_types]
+        types = [
+            (name.strip(), price, quota)
+            for name, price, quota in draft.ticket_types
+        ]
         if not types or any(
             not name or price < 0 or quota < 1 for name, price, quota in types
         ):
@@ -325,12 +391,19 @@ class Ticketing:
 
     def _insert_session(self, db, event, draft):
         types = self.validate_session(draft)
-        ends_at = draft.ends_at.isoformat(timespec="seconds") if draft.ends_at else None
+        ends_at = (
+            draft.ends_at.isoformat(timespec="seconds")
+            if draft.ends_at else None
+        )
         session = db.execute(
             "INSERT INTO sessions(event_id, venue, starts_at, ends_at, "
             "capacity) "
             "VALUES (?, ?, ?, ?, ?)",
-            (event, draft.venue.strip(), draft.starts_at.isoformat(timespec="seconds"), ends_at, draft.capacity),
+            (
+                event, draft.venue.strip(),
+                draft.starts_at.isoformat(timespec="seconds"),
+                ends_at, draft.capacity,
+            ),
         ).lastrowid
         self._insert_ticket_types(db, session, types)
         return session
@@ -345,6 +418,7 @@ class Ticketing:
         )
 
     def submit_review(self, actor, event_id):
+        """Queue a draft or previously unlisted activity for publication."""
         with self.connection(write=True) as db:
             self.require_role(db, actor, "organizer")
             event = db.execute(
@@ -367,6 +441,7 @@ class Ticketing:
         self.log(db, actor, "提交发布审核", event_id, target_type="event")
 
     def change_options(self, actor, session_id):
+        """Return the open ticket types eligible for a change request."""
         with self.connection() as db:
             self.require_role(db, actor, "organizer")
             return db.execute(
@@ -386,6 +461,7 @@ class Ticketing:
         self, actor, session_id, ticket_type_id, price, quota, capacity,
         starts_at,
     ):
+        """Queue requested changes without applying them to live stock."""
         with self.connection(write=True) as db:
             self.require_role(db, actor, "organizer")
             event = db.execute(
@@ -425,6 +501,7 @@ class Ticketing:
             self.log(db, actor, "提交变更审核", event["id"], target_type="event")
 
     def closure_options(self, actor, session):
+        """Return the ticket types an organizer can select for closure."""
         with self.connection() as db:
             self._published_session_owner(db, actor, session)
             return db.execute(
@@ -446,6 +523,7 @@ class Ticketing:
         return row["event_id"]
 
     def submit_closure(self, actor, session, *, ticket_type=None):
+        """Queue a session cancellation or ticket closure for approval."""
         with self.connection(write=True) as db:
             event = self._published_session_owner(db, actor, session)
             self.validate_closure(db, session, ticket_type)
@@ -466,11 +544,13 @@ class Ticketing:
 
     @staticmethod
     def closure_target(session, ticket_type):
+        """Return the audit label and target for the closure request."""
         if ticket_type is None:
             return "取消场次", session, "session"
         return "关闭票种", ticket_type, "ticket_type"
 
     def validate_closure(self, db, session, ticket_type):
+        """Verify the session or ticket type can still be closed."""
         row = db.execute(
             "SELECT s.event_id, s.starts_at, s.venue, e.title FROM sessions s "
             "JOIN events e ON e.id = s.event_id "
@@ -497,6 +577,7 @@ class Ticketing:
         return row
 
     def validate_change(self, db, proposal):
+        """Check a proposal against current tickets and waitlist offers."""
         session_id = proposal["session_id"]
         session = db.execute(
             "SELECT starts_at, ends_at, capacity FROM sessions WHERE id = ? "
@@ -519,10 +600,16 @@ class Ticketing:
         old = types.get(proposal["ticket_type_id"])
         if old is None:
             raise RuleError("票种不属于所选场次。")
-        quota, capacity = proposal["ticket_capacity"], proposal["session_capacity"]
+        quota, capacity = (
+            proposal["ticket_capacity"], proposal["session_capacity"],
+        )
         if proposal["price_cents"] < 0 or quota < 1 or capacity < 1:
             raise RuleError("价格不得为负数，容量至少为 1。")
-        if sum(row["capacity"] for row in types.values()) - old["capacity"] + quota > capacity:
+        if (
+            sum(row["capacity"] for row in types.values())
+            - old["capacity"] + quota
+            > capacity
+        ):
             raise RuleError("票种容量之和不能超过场次容量。")
         if old["capacity"] - old["available"] > quota:
             raise RuleError("票种新容量低于已出票与预留的名额。")
@@ -533,7 +620,7 @@ class Ticketing:
             "GROUP BY w.id HAVING COUNT(*) > ?", (old["id"], quota),
         ).fetchone():
             raise RuleError("票种新容量不足以满足已有候补的单笔需求。")
-        cutoff = (starts - timedelta(hours=2)).isoformat()
+        cutoff = (starts - BOOKING_CUTOFF).isoformat()
         if db.execute(
             "SELECT 1 FROM waitlist WHERE session_id = ? AND status = "
             "'offered' "
@@ -545,16 +632,21 @@ class Ticketing:
         if ends_at:
             duration = datetime.fromisoformat(ends_at) - old_start
             ends_at = (starts + duration).isoformat(timespec="seconds")
-        return quota < old["capacity"] or capacity < session["capacity"], ends_at
+        return (
+            quota < old["capacity"] or capacity < session["capacity"], ends_at,
+        )
 
     def pending_review(self, actor, event_id):
+        """Read the current request with the fields needed by the reviewer."""
         with self.connection() as db:
             self.require_role(db, actor, "admin")
             row = db.execute(
                 "SELECT r.id AS review_id, p.*, tt.name, tt.price_cents AS "
                 "old_price, "
-                "tt.capacity AS old_quota, s.capacity AS old_capacity, s.starts_at AS old_start, "
-                "c.session_id AS closure_session, c.ticket_type_id AS closure_ticket, "
+                "tt.capacity AS old_quota, s.capacity AS old_capacity, "
+                "s.starts_at AS old_start, "
+                "c.session_id AS closure_session, "
+                "c.ticket_type_id AS closure_ticket, "
                 "cs.venue AS closure_venue, cs.starts_at AS closure_start, "
                 "ct.name AS closure_name "
                 "FROM reviews r LEFT JOIN change_proposals p ON p.review_id = "
@@ -574,24 +666,31 @@ class Ticketing:
         self, actor, event_id, approved, reason="", *, confirm_reduction=False,
         review_id=None,
     ):
+        """Recheck the current request before applying the decision."""
         if not approved and not reason.strip():
             raise RuleError("驳回时需要填写原因。")
         with self.connection(write=True) as db:
             self.require_role(db, actor, "admin")
             request = db.execute(
                 "SELECT r.id AS request_id, r.previous_status, p.*, "
-                "c.session_id AS closure_session, c.ticket_type_id AS closure_ticket "
+                "c.session_id AS closure_session, "
+                "c.ticket_type_id AS closure_ticket "
                 "FROM reviews r LEFT JOIN change_proposals p ON p.review_id = "
                 "r.id "
                 "LEFT JOIN closure_proposals c ON c.review_id = r.id "
                 "WHERE r.event_id = ? AND r.status = 'pending'",
                 (event_id,),
             ).fetchone()
-            if request is None or (review_id is not None and review_id != request["request_id"]):
+            if request is None or (
+                review_id is not None and review_id != request["request_id"]
+            ):
                 raise RuleError("待审申请已变动，请刷新后重新审核。")
             closure_session = request["closure_session"]
             closure_ticket = request["closure_ticket"]
-            is_change = request["session_id"] is not None or closure_session is not None
+            is_change = (
+                request["session_id"] is not None
+                or closure_session is not None
+            )
             if approved and closure_session is not None:
                 self.apply_closure(db, closure_session, closure_ticket)
             elif approved and is_change:
@@ -607,12 +706,19 @@ class Ticketing:
                 db.execute(
                     "UPDATE sessions SET starts_at = ?, ends_at = ?, capacity "
                     "= ? WHERE id = ?",
-                    (request["starts_at"], ends_at, request["session_capacity"], session),
+                    (
+                        request["starts_at"], ends_at,
+                        request["session_capacity"],
+                        session,
+                    ),
                 )
                 db.execute(
                     "UPDATE ticket_types SET price_cents = ?, capacity = ? "
                     "WHERE id = ?",
-                    (request["price_cents"], request["ticket_capacity"], request["ticket_type_id"]),
+                    (
+                        request["price_cents"], request["ticket_capacity"],
+                        request["ticket_type_id"],
+                    ),
                 )
             db.execute(
                 "UPDATE reviews SET status = ?, reviewer_id = ?, reason = ? "
@@ -622,7 +728,10 @@ class Ticketing:
                     actor, reason.strip(), request["request_id"],
                 ),
             )
-            status = "published" if approved or is_change else request["previous_status"]
+            status = (
+                "published" if approved or is_change
+                else request["previous_status"]
+            )
             db.execute(
                 "UPDATE events SET status = ? WHERE id = ?",
                 (status, event_id),
@@ -632,13 +741,18 @@ class Ticketing:
                     closure_session, closure_ticket,
                 )
             else:
-                action, target, kind = ("变更" if is_change else "发布"), event_id, "event"
+                action, target, kind = (
+                    ("变更" if is_change else "发布"), event_id, "event",
+                )
             result = "审核通过" if approved else "审核驳回"
             self.log(
                 db, actor, action + result, target, reason.strip(),
                 target_type=kind,
             )
-            resume_session = closure_session if closure_ticket is not None else request["session_id"]
+            resume_session = (
+                closure_session if closure_ticket is not None
+                else request["session_id"]
+            )
             if approved and resume_session is not None:
                 self.advance_waitlist(
                     db, resume_session, self.clock(),
@@ -646,9 +760,13 @@ class Ticketing:
                 )
 
     def apply_closure(self, db, session, ticket_type):
+        """Apply the approved closure and notify affected participants."""
         row = self.validate_closure(db, session, ticket_type)
         timestamp = self.clock().isoformat(timespec="seconds")
-        label = f"「{row['title']}」{row['starts_at'].replace('T', ' ')} · {row['venue']}"
+        label = (
+            f"「{row['title']}」{row['starts_at'].replace('T', ' ')}"
+            f" · {row['venue']}"
+        )
         if ticket_type is None:
             db.execute(
                 "UPDATE sessions SET cancelled_at = ? WHERE id = ?",
@@ -673,7 +791,8 @@ class Ticketing:
             f"SELECT user_id FROM waitlist {affected}", (ticket_type,),
         ).fetchall()
         db.execute(
-            f"UPDATE waitlist SET status = 'closed', deadline = NULL {affected}",
+            f"UPDATE waitlist SET status = 'closed', "
+            f"deadline = NULL {affected}",
             (ticket_type,),
         )
         self.notify_participants(
@@ -682,6 +801,7 @@ class Ticketing:
         )
 
     def set_event_status(self, actor, event_id, status, reason=""):
+        """Apply an activity-wide moderation action with an audit reason."""
         actions = {"unlisted": "下架活动", "disabled": "停用活动", "cancelled": "取消活动"}
         if status not in actions or not reason.strip():
             raise RuleError("请选择活动操作并填写原因。")
@@ -694,9 +814,14 @@ class Ticketing:
             ).fetchone()
             if event is None or not event["is_public"]:
                 raise RuleError("只能操作仍对外开放的活动。")
-            owner = event["role"] == "organizer" and event["organizer_id"] == actor
+            owner = (
+                event["role"] == "organizer" and event["organizer_id"] == actor
+            )
             admin = event["role"] == "admin"
-            if not ({"unlisted": owner, "disabled": admin, "cancelled": owner or admin}[status]):
+            if not ({
+                "unlisted": owner, "disabled": admin,
+                "cancelled": owner or admin,
+            }[status]):
                 raise RuleError("当前账号无权执行此操作。")
             db.execute(
                 "UPDATE events SET status = ? WHERE id = ?",
@@ -716,6 +841,7 @@ class Ticketing:
             )
 
     def cancel_event_bookings(self, db, event_id, title, *, session=None):
+        """Cancel active orders and close affected waitlist entries."""
         session_ids = "SELECT id FROM sessions WHERE event_id = ?"
         parameters = (event_id,)
         if session is not None:
@@ -746,14 +872,22 @@ class Ticketing:
         )
 
     def notify_participants(self, db, users, event_id, message):
+        """Save an in-app notice for each affected participant."""
         db.executemany(
             "INSERT INTO participant_notices(user_id, event_id, message, "
             "created_at) "
             "VALUES (?, ?, ?, ?)",
-            [(row["user_id"], event_id, message, self.clock().isoformat(timespec="seconds")) for row in users],
+            [
+                (
+                    row["user_id"], event_id, message,
+                    self.clock().isoformat(timespec="seconds"),
+                )
+                for row in users
+            ],
         )
 
     def my_notices(self, actor):
+        """Return the participant's notices from newest to oldest."""
         with self.connection() as db:
             self.require_role(db, actor, "participant")
             return db.execute(
@@ -766,6 +900,7 @@ class Ticketing:
         self, actor, *, keyword="", venue="", date="", ticket="",
         available=False,
     ):
+        """Return sessions visible to the actor under the supplied filters."""
         if date:
             date = datetime.strptime(date, "%Y-%m-%d").date().isoformat()
         if available:
@@ -779,9 +914,11 @@ class Ticketing:
             filters = {
                 "organizer": ("e.organizer_id = ?", (actor,)),
                 "admin": ("1 = 1", ()),
-                "participant": (f"{PUBLIC_EVENT} AND s.cancelled_at IS NULL AND s.starts_at > ?", (
-                    self.clock().isoformat(timespec="seconds"),
-                )),
+                "participant": (
+                    f"{PUBLIC_EVENT} AND s.cancelled_at IS NULL "
+                    "AND s.starts_at > ?",
+                    (self.clock().isoformat(timespec="seconds"),),
+                ),
                 "checker": (
                     f"{PUBLIC_EVENT} AND s.cancelled_at IS NULL AND EXISTS "
                     "(SELECT 1 FROM checker_assignments a "
@@ -790,20 +927,30 @@ class Ticketing:
                 ),
             }
             condition, parameters = filters[user["role"]]
-            if any((venue, date, ticket, available)) and user["role"] != "participant":
+            if (
+                any((venue, date, ticket, available))
+                and user["role"] != "participant"
+            ):
                 raise RuleError("组合筛选仅用于参与者查询。")
             if ticket or available:
                 condition += (
-                    " AND EXISTS (SELECT 1 FROM (" + self.stock_query(protect_queue=True) +
+                    " AND EXISTS (SELECT 1 FROM ("
+                    + self.stock_query(protect_queue=True) +
                     "WHERE tt.session_id = s.id AND tt.closed_at IS NULL) AS "
                     "stock "
                     "WHERE (? = '' OR instr(stock.name, ?) > 0) AND (? = 0 OR "
                     "stock.available > 0))"
                 )
-                parameters += (self.queue_cutoff(self.clock()), ticket, ticket, available)
+                parameters += (
+                    self.queue_cutoff(self.clock()), ticket, ticket, available,
+                )
             if available:
                 condition += " AND s.starts_at > ?"
-                parameters += ((self.clock() + timedelta(hours=2)).isoformat(timespec="seconds"),)
+                parameters += (
+                    (self.clock() + BOOKING_CUTOFF).isoformat(
+                        timespec="seconds",
+                    ),
+                )
             return db.execute(
                 "SELECT e.id AS event_id, e.title, e.status, s.id AS "
                 "session_id, "
@@ -823,6 +970,7 @@ class Ticketing:
             ).fetchall()
 
     def participant_session_stock(self, actor, event):
+        """Summarize visible stock after applying waitlist holds."""
         self.process_waitlists()
         with self.connection() as db:
             self.require_role(db, actor, "participant")
@@ -839,6 +987,7 @@ class Ticketing:
             return {row["session_id"]: row["available"] for row in rows}
 
     def ticket_types(self, actor, session):
+        """Return open ticket types with their current available stock."""
         self.process_waitlists()
         with self.connection() as db:
             self.require_role(db, actor, "participant")
@@ -854,10 +1003,12 @@ class Ticketing:
 
     @staticmethod
     def queue_cutoff(now):
-        return (now + timedelta(hours=2, minutes=30)).isoformat()
+        """Return the start-time threshold for new waitlist offers."""
+        return (now + BOOKING_CUTOFF + OFFER_WINDOW).isoformat()
 
     @staticmethod
     def stock_query(*, protect_queue=False):
+        """Build the stock query with optional protection for the queue."""
         queued_demand = ""
         if protect_queue:
             queued_demand = (
@@ -882,11 +1033,16 @@ class Ticketing:
         )
 
     def stock(self, db, session_id, requests, *, protect_queue=False):
+        """Check whole-order stock and return the current ticket prices."""
         quantities = Counter(item.ticket_type_id for item in requests)
-        parameters = (self.queue_cutoff(self.clock()), session_id) if protect_queue else (session_id,)
+        parameters = (
+            (self.queue_cutoff(self.clock()), session_id)
+            if protect_queue else (session_id,)
+        )
         stocks = {
             row["id"]: row for row in db.execute(
-                self.stock_query(protect_queue=protect_queue) + "WHERE tt.session_id = ?",
+                self.stock_query(protect_queue=protect_queue)
+                + "WHERE tt.session_id = ?",
                 parameters,
             )
         }
@@ -907,6 +1063,7 @@ class Ticketing:
 
     @staticmethod
     def validate_requests(requests):
+        """Require one or two tickets and a holder name for each."""
         requests = tuple(requests)
         if not 1 <= len(requests) <= 2:
             raise RuleError("一次只能报名一至两张票。")
@@ -915,6 +1072,7 @@ class Ticketing:
         return requests
 
     def booking_deadline(self, db, session_id):
+        """Return the deadline for a session that is open to booking."""
         session = db.execute(
             "SELECT s.starts_at FROM sessions s "
             "JOIN events e ON s.event_id = e.id WHERE s.id = ? AND "
@@ -923,10 +1081,11 @@ class Ticketing:
         ).fetchone()
         if session is None:
             raise RuleError("该场次尚未开放报名。")
-        return datetime.fromisoformat(session["starts_at"]) - timedelta(hours=2)
+        return _booking_deadline_for(session["starts_at"])
 
     @staticmethod
     def require_no_registration(db, actor, session_id):
+        """Reject a second active registration for the same session."""
         if db.execute(
             "SELECT 1 FROM registrations WHERE user_id = ? AND session_id = ? "
             "AND status <> 'cancelled'", (actor, session_id),
@@ -934,6 +1093,7 @@ class Ticketing:
             raise RuleError("同一账号只能对该场次保留一条有效报名。")
 
     def issue(self, db, actor, session, requests, prices):
+        """Store a registration and give each ticket its own code."""
         order = db.execute(
             "INSERT INTO registrations(user_id, session_id, status) VALUES "
             "(?, ?, 'registered')",
@@ -955,6 +1115,7 @@ class Ticketing:
 
     @staticmethod
     def require_current_prices(prices, expected_prices):
+        """Reject stale quotes before changing a participant's order."""
         if expected_prices is not None and any(
             expected_prices.get(kind) != price for kind,
             price in prices.items()
@@ -962,6 +1123,7 @@ class Ticketing:
             raise RuleError("票价已更新，请重新打开报名窗口核对价格后再提交。")
 
     def register(self, actor, session_id, requests, *, expected_prices=None):
+        """Check stock and issue all requested tickets atomically."""
         requests = self.validate_requests(requests)
         self.process_waitlists()
         with self.connection(write=True) as db:
@@ -985,6 +1147,7 @@ class Ticketing:
 
     @staticmethod
     def next_position(db, session):
+        """Choose the next queue position for this session."""
         return db.execute(
             "SELECT COALESCE(MAX(position), 0) + 1 FROM waitlist WHERE "
             "session_id = ?",
@@ -993,6 +1156,7 @@ class Ticketing:
 
     @staticmethod
     def waitlist_requests(db, entry):
+        """Rebuild the requested tickets for a stored queue entry."""
         return [
             TicketRequest(row["ticket_type_id"], row["holder_name"])
             for row in db.execute(
@@ -1005,6 +1169,7 @@ class Ticketing:
         self, actor, session, requests, *, accept_no_offer=False,
         expected_prices=None,
     ):
+        """Queue a request when the full set of tickets cannot be issued."""
         requests = self.validate_requests(requests)
         with self.connection(write=True) as db:
             self.require_role(db, actor, "participant")
@@ -1019,7 +1184,7 @@ class Ticketing:
             ).fetchone()
             if existing:
                 return existing["id"]
-            if now >= deadline - timedelta(minutes=30) and not accept_no_offer:
+            if now >= deadline - OFFER_WINDOW and not accept_no_offer:
                 raise RuleError("当前时段不会发送新递补通知。请先确认候补风险。")
             fits, prices = self.stock(
                 db, session, requests, protect_queue=True,
@@ -1037,7 +1202,10 @@ class Ticketing:
                 "ticket_type_id, holder_name) "
                 "VALUES (?, ?, ?, ?)",
                 [
-                    (entry, session, item.ticket_type_id, item.holder_name.strip())
+                    (
+                        entry, session, item.ticket_type_id,
+                        item.holder_name.strip(),
+                    )
                     for item in requests
                 ],
             )
@@ -1045,6 +1213,7 @@ class Ticketing:
         return entry
 
     def advance_waitlist(self, db, session, now, deadline, *, offer_new=True):
+        """Expire offers and notify eligible entries in queue order."""
         entries = db.execute(
             "SELECT id, user_id, status, deadline FROM waitlist WHERE "
             "session_id = ? "
@@ -1058,7 +1227,9 @@ class Ticketing:
                     "UPDATE waitlist SET status = 'closed' WHERE id = ?",
                     (row["id"],),
                 )
-            elif row["status"] == "offered" and now >= datetime.fromisoformat(row["deadline"]):
+            elif row["status"] == "offered" and (
+                now >= datetime.fromisoformat(row["deadline"])
+            ):
                 expired.add(row["id"])
                 db.execute(
                     "UPDATE waitlist SET status = 'queued', deadline = NULL, "
@@ -1070,7 +1241,7 @@ class Ticketing:
                     db, row["user_id"], "递补超时释放", row["id"],
                     target_type="waitlist",
                 )
-        if not offer_new or now >= deadline - timedelta(minutes=30):
+        if not offer_new or now >= deadline - OFFER_WINDOW:
             return
         queue = db.execute(
             "SELECT id, user_id FROM waitlist WHERE session_id = ? AND status "
@@ -1099,7 +1270,7 @@ class Ticketing:
             db.execute(
                 "UPDATE waitlist SET status = 'offered', deadline = ? WHERE "
                 "id = ?",
-                ((now + timedelta(minutes=30)).isoformat(), row["id"]),
+                ((now + OFFER_WINDOW).isoformat(), row["id"]),
             )
             self.log(
                 db, row["user_id"], "生成站内递补通知", row["id"],
@@ -1107,6 +1278,7 @@ class Ticketing:
             )
 
     def process_waitlists(self):
+        """Refresh outstanding waitlist entries and mark ended absences."""
         with self.connection(write=True) as db:
             active = db.execute(
                 "SELECT DISTINCT s.id, s.starts_at, "
@@ -1117,7 +1289,7 @@ class Ticketing:
             ).fetchall()
             now = self.clock()
             for row in active:
-                deadline = datetime.fromisoformat(row["starts_at"]) - timedelta(hours=2)
+                deadline = _booking_deadline_for(row["starts_at"])
                 self.advance_waitlist(
                     db, row["id"], now, deadline, offer_new=row["is_public"],
                 )
@@ -1125,6 +1297,7 @@ class Ticketing:
 
     @staticmethod
     def mark_absences(db, now):
+        """Mark ended registrations whose tickets were all unchecked."""
         db.execute(
             "UPDATE registrations SET status = 'absent' WHERE status = "
             "'registered' "
@@ -1136,6 +1309,7 @@ class Ticketing:
         )
 
     def my_waitlist(self, actor):
+        """Refresh offers and return the participant's queue history."""
         self.process_waitlists()
         with self.connection() as db:
             self.require_role(db, actor, "participant")
@@ -1158,6 +1332,7 @@ class Ticketing:
         self, actor, entry, *, accept, expected_deadline=None,
         expected_amount=None,
     ):
+        """Accept a current offer at the quoted amount or release it."""
         with self.connection(write=True) as db:
             self.require_role(db, actor, "participant")
             row = db.execute(
@@ -1178,8 +1353,12 @@ class Ticketing:
                 self.log(db, actor, "放弃候补", entry, target_type="waitlist")
                 self.advance_waitlist(db, session, now, deadline)
                 return []
-            if row["status"] != "offered" or row["deadline"] != expected_deadline or now >= min(
-                datetime.fromisoformat(row["deadline"]), deadline,
+            if (
+                row["status"] != "offered"
+                or row["deadline"] != expected_deadline
+                or now >= min(
+                    datetime.fromisoformat(row["deadline"]), deadline,
+                )
             ):
                 raise RuleError("当前没有可确认的递补名额。")
             self.require_no_registration(db, actor, session)
@@ -1202,6 +1381,7 @@ class Ticketing:
             return codes
 
     def my_tickets(self, actor):
+        """Return the participant's tickets with payment and attendance."""
         with self.connection(write=True) as db:
             self.require_role(db, actor, "participant")
             self.mark_absences(db, self.clock())
@@ -1209,8 +1389,10 @@ class Ticketing:
                 "SELECT e.title, e.status AS event_status, s.starts_at, "
                 "s.ends_at, s.cancelled_at, s.venue, "
                 "tt.name, t.holder_name, t.price_cents, t.code, "
-                "t.checked_at, r.id AS registration_id, r.status AS registration_status, "
-                "p.paid_at, p.refunded_at, SUM(t.price_cents) OVER (PARTITION BY r.id) AS amount "
+                "t.checked_at, r.id AS registration_id, "
+                "r.status AS registration_status, "
+                "p.paid_at, p.refunded_at, "
+                "SUM(t.price_cents) OVER (PARTITION BY r.id) AS amount "
                 "FROM tickets t JOIN registrations r ON r.id = "
                 "t.registration_id "
                 "JOIN sessions s ON s.id = t.session_id JOIN events e ON e.id "
@@ -1237,18 +1419,23 @@ class Ticketing:
             self.mark_absences(db, now)
             end = details["ends_at"]
             cancelled = details["cancelled_at"] is not None
-            finished = not cancelled and end is not None and now >= datetime.fromisoformat(end)
+            finished = (
+                not cancelled and end is not None
+                and now >= datetime.fromisoformat(end)
+            )
             if not cancelled:
-                deadline = datetime.fromisoformat(details["starts_at"]) - timedelta(hours=2)
+                deadline = _booking_deadline_for(details["starts_at"])
                 self.advance_waitlist(db, session, now, deadline)
             types = db.execute(
-                self.stock_query(protect_queue=True) + "WHERE tt.session_id = ? ORDER BY tt.id",
+                self.stock_query(protect_queue=True)
+                + "WHERE tt.session_id = ? ORDER BY tt.id",
                 (self.queue_cutoff(now), session),
             ).fetchall()
             roster = db.execute(
                 "SELECT r.id AS registration_id, u.name AS registrant, tt.id "
                 "AS ticket_type_id, "
-                "tt.name AS ticket_type, t.holder_name, t.price_cents, t.checked_at "
+                "tt.name AS ticket_type, t.holder_name, t.price_cents, "
+                "t.checked_at "
                 "FROM tickets t JOIN registrations r ON r.id = "
                 "t.registration_id "
                 "JOIN users u ON u.id = r.user_id JOIN ticket_types tt ON "
@@ -1258,7 +1445,9 @@ class Ticketing:
                 "ORDER BY r.id, t.id", (session, cancelled),
             ).fetchall()
             issued = Counter(row["ticket_type_id"] for row in roster)
-            checked = Counter(row["ticket_type_id"] for row in roster if row["checked_at"])
+            checked = Counter(
+                row["ticket_type_id"] for row in roster if row["checked_at"]
+            )
             statistics = []
             for row in types:
                 count = issued[row["id"]]
@@ -1269,20 +1458,32 @@ class Ticketing:
                     "closed": closed,
                     "capacity": row["capacity"],
                     "issued": count,
-                    "reserved": 0 if cancelled or closed else row["capacity"] - row["available"] - count,
-                    "available": 0 if cancelled or closed else row["available"],
+                    "reserved": (
+                        0 if cancelled or closed
+                        else row["capacity"] - row["available"] - count
+                    ),
+                    "available": (
+                        0 if cancelled or closed else row["available"]
+                    ),
                     "checked": attendance,
                     "absent": count - attendance if finished else None,
                 })
             return details, statistics, roster, finished
 
     def export_roster(self, actor, session, path):
+        """Write a session's attendance roster to a UTF-8 CSV."""
         _, _, roster, finished = self.session_report(actor, session)
         with Path(path).open("w", encoding="utf-8-sig", newline="") as target:
             writer = csv.writer(target)
-            writer.writerow(("报名编号", "报名人", "脱敏手机号", "持票人", "票种", "票价（元）", "状态"))
+            writer.writerow((
+                "报名编号", "报名人", "脱敏手机号", "持票人",
+                "票种", "票价（元）", "状态",
+            ))
             for row in roster:
-                status = "已签到" if row["checked_at"] else ("缺席" if finished else "尚未签到")
+                status = (
+                    "已签到" if row["checked_at"]
+                    else ("缺席" if finished else "尚未签到")
+                )
                 writer.writerow((
                     row["registration_id"], self.csv_cell(row["registrant"]),
                     "",
@@ -1294,11 +1495,16 @@ class Ticketing:
 
     @staticmethod
     def csv_cell(value):
-        if value.startswith(("\t", "\r", "\n")) or value.lstrip().startswith(("=", "+", "-", "@")):
+        """Escape values that spreadsheets could interpret as formulas."""
+        if (
+            value.startswith(("\t", "\r", "\n"))
+            or value.lstrip().startswith(("=", "+", "-", "@"))
+        ):
             return "'" + value
         return value
 
     def session_registrations(self, actor, session):
+        """List registration headers visible to the operator."""
         with self.connection() as db:
             return db.execute(
                 "SELECT r.id, u.name, r.status FROM registrations r "
@@ -1313,6 +1519,7 @@ class Ticketing:
             ).fetchall()
 
     def session_payments(self, actor, session):
+        """Return orders and payment totals for the organizer's session."""
         with self.connection() as db:
             self.require_role(db, actor, "organizer")
             belongs = db.execute(
@@ -1332,6 +1539,7 @@ class Ticketing:
             ).fetchall()
 
     def record_payment(self, actor, order, *, refund):
+        """Record an offline payment or whole-order refund."""
         with self.connection(write=True) as db:
             self.require_role(db, actor, "organizer")
             registration = db.execute(
@@ -1349,21 +1557,28 @@ class Ticketing:
                 raise RuleError("只能登记本人活动的缴费或退款。")
             now = self.clock().isoformat(timespec="seconds")
             if refund:
-                if registration["status"] != "cancelled" or not registration["paid_at"]:
+                if (
+                    registration["status"] != "cancelled"
+                    or not registration["paid_at"]
+                ):
                     raise RuleError("只可登记已缴费且已取消的整笔报名退款。")
                 if registration["refunded_at"]:
                     return
                 db.execute(
-                    "UPDATE payments SET refunded_at = ? WHERE registration_id = ?",
+                    "UPDATE payments SET refunded_at = ? "
+                    "WHERE registration_id = ?",
                            (now, order))
                 action = "登记线下退款"
             else:
-                if registration["status"] == "cancelled" or not registration["amount"]:
+                if registration["status"] == "cancelled" or (
+                    not registration["amount"]
+                ):
                     raise RuleError("不能为已取消或免费的报名登记缴费。")
                 if registration["paid_at"]:
                     return
                 db.execute(
-                    "INSERT INTO payments(registration_id, paid_at) VALUES (?, ?)",
+                    "INSERT INTO payments(registration_id, paid_at) "
+                    "VALUES (?, ?)",
                            (order, now))
                 action = "登记线下缴费"
             self.log(db, actor, action, order, target_type="registration")
@@ -1372,6 +1587,7 @@ class Ticketing:
         self, actor, *, action="", operator="", target_type="", target="",
         date="",
     ):
+        """Return up to 500 audit records matching the supplied filters."""
         if date:
             try:
                 date = datetime.strptime(date, "%Y-%m-%d").date().isoformat()
@@ -1401,7 +1617,8 @@ class Ticketing:
                 "= l.target_id "
                 "LEFT JOIN sessions s ON s.id = CASE WHEN l.target_type = "
                 "'session' THEN l.target_id "
-                "ELSE COALESCE(r.session_id, t.session_id, w.session_id, tt.session_id) END "
+                "ELSE COALESCE(r.session_id, t.session_id, "
+                "w.session_id, tt.session_id) END "
                 "LEFT JOIN events e ON e.id = CASE WHEN l.target_type = "
                 "'event' THEN l.target_id ELSE s.event_id END "
                 "WHERE (? = '' OR instr(l.action, ?) > 0) "
@@ -1410,10 +1627,15 @@ class Ticketing:
                 "AND (? = '' OR CAST(l.target_id AS TEXT) = ?) "
                 "AND (? = '' OR substr(l.created_at, 1, 10) = ?) "
                 "ORDER BY l.id DESC LIMIT 500",
-                (action, action, operator, operator, target_type, target_type, target, target, date, date),
+                (
+                    action, action, operator, operator,
+                    target_type, target_type,
+                    target, target, date, date,
+                ),
             ).fetchall()
 
     def cancel_registration(self, actor, registration_id, *, reason=""):
+        """Cancel the whole order and make its quota available again."""
         with self.connection(write=True) as db:
             row = db.execute(
                 "SELECT r.user_id, r.status, s.starts_at, s.id AS session_id, "
@@ -1426,7 +1648,9 @@ class Ticketing:
             ).fetchone()
             if row is None:
                 raise RuleError("找不到报名记录。")
-            self_service = row["role"] == "participant" and row["user_id"] == actor
+            self_service = (
+                row["role"] == "participant" and row["user_id"] == actor
+            )
             assisted = row["role"] == "admin" or (
                 row["role"] == "organizer" and row["organizer_id"] == actor
             )
@@ -1439,10 +1663,10 @@ class Ticketing:
             remaining = datetime.fromisoformat(row["starts_at"]) - self.clock()
             if remaining <= timedelta(0):
                 raise RuleError("场次已开始，无法取消报名。")
-            if self_service and remaining <= timedelta(hours=24):
+            if self_service and remaining <= SELF_CANCELLATION_CUTOFF:
                 raise RuleError("距开场不足或等于 24 小时，请联系组织者代取消。")
             if assisted:
-                if remaining > timedelta(hours=24):
+                if remaining > SELF_CANCELLATION_CUTOFF:
                     raise RuleError("距开场超过 24 小时，请由报名人自助取消。")
                 if not reason.strip():
                     raise RuleError("请填写代取消原因。")
@@ -1455,13 +1679,14 @@ class Ticketing:
                 db, actor, action, registration_id,
                 reason.strip() if assisted else "", target_type="registration",
             )
-            deadline = datetime.fromisoformat(row["starts_at"]) - timedelta(hours=2)
+            deadline = _booking_deadline_for(row["starts_at"])
             self.advance_waitlist(
                 db, row["session_id"], self.clock(), deadline,
                 offer_new=row["is_public"],
             )
 
     def assign_checker(self, actor, checker, session):
+        """Grant a checker access to the organizer's selected session."""
         with self.connection(write=True) as db:
             self.require_role(db, actor, "organizer")
             self.require_role(db, checker, "checker")
@@ -1507,11 +1732,14 @@ class Ticketing:
             raise RuleError("这笔报名已取消，票据已失效。")
         if ticket["checked_at"]:
             raise AlreadyCheckedIn(ticket["checked_at"])
-        if assigned["ends_at"] and now >= datetime.fromisoformat(assigned["ends_at"]):
+        if assigned["ends_at"] and (
+            now >= datetime.fromisoformat(assigned["ends_at"])
+        ):
             raise RuleError("场次已结束，不能再签到。")
         return ticket
 
     def preview_check_in(self, actor, session_id, code):
+        """Verify the ticket and return its holder and type before check-in."""
         with self.connection() as db:
             ticket = self._checkable_ticket(
                 db, actor, session_id, code, self.clock(),
@@ -1519,6 +1747,7 @@ class Ticketing:
             return ticket["holder_name"], ticket["ticket_type"]
 
     def check_in(self, actor, session_id, code):
+        """Recheck the ticket before recording its first attendance time."""
         with self.connection(write=True) as db:
             now = self.clock()
             ticket = self._checkable_ticket(db, actor, session_id, code, now)
